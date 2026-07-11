@@ -1,0 +1,9 @@
+# Formatting style for this project. Run: clang-format -i src/*.cpp src/*.h include/*.h
+BasedOnStyle: Google
+IndentWidth: 2
+ColumnLimit: 100
+DerivePointerAlignment: false
+PointerAlignment: Right
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: false
+SortIncludes: false
