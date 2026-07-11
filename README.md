@@ -20,7 +20,7 @@ descrambling algorithm, so **no encryption key is required**.
 | GPIO23 | MOSI (SI) | |
 | GPIO19 | MISO (SO) | |
 | GPIO18 | SCK (CLK) | |
-| GPIO21 | CS (CSN) | |
+| GPIO5 | CS (CSN) | |
 | GPIO16 | GDO0 | |
 | GPIO17 | GDO2 | |
 | 3V3 | VCC | **3.3 V only — 5 V will destroy the CC1101** |

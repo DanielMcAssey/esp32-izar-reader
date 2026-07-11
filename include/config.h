@@ -15,7 +15,7 @@
 #define CC1101_MOSI 23
 #define CC1101_MISO 19
 #define CC1101_SCK  18
-#define CC1101_CS   21
+#define CC1101_CS   5
 #define CC1101_GDO0 16
 #define CC1101_GDO2 17
 
