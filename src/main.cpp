@@ -97,93 +97,94 @@ static void maintainWifi() {
   }
 }
 
-// --- Home Assistant MQTT discovery -----------------------------------------
+// --- Home Assistant MQTT device discovery ----------------------------------
+// A single retained config on homeassistant/device/<id>/config describes the
+// whole device and every entity ("component") at once, instead of one config
+// topic per entity. Shared keys (state/availability topics) live at the top
+// level; each component carries its own platform + unique_id. See:
+//   https://www.home-assistant.io/integrations/mqtt/#device-based-discovery
 
-// Common fields shared by every entity: predictable ids, the state/availability
-// topics, and the device block so all entities group under one HA device.
-static void addHaCommon(JsonDocument &doc, const char *objectId) {
+// Add one sensor component to the shared `cmps` object. Pass nullptr for
+// unit/deviceClass/stateClass to omit them.
+static void addSensor(JsonObject cmps, const char *objectId, const char *name,
+                      const char *valueTemplate, const char *unit,
+                      const char *deviceClass, const char *stateClass,
+                      bool diagnostic) {
   char uid[64];
   snprintf(uid, sizeof(uid), "%s_%s", HA_DEVICE_ID, objectId);
-  doc["unique_id"]          = uid;  // char[] -> ArduinoJson copies into the doc
-  doc["object_id"]          = uid;  // predictable entity_id
-  doc["state_topic"]        = MQTT_STATE_TOPIC;
-  doc["availability_topic"] = MQTT_AVAIL_TOPIC;
+  JsonObject c = cmps[objectId].to<JsonObject>();
+  c["platform"]       = "sensor";      // required for each device-discovery component
+  c["unique_id"]      = uid;           // char[] -> ArduinoJson copies into the doc
+  c["object_id"]      = uid;           // predictable entity_id
+  c["name"]           = name;
+  c["value_template"] = valueTemplate;
+  if (unit)        c["unit_of_measurement"] = unit;
+  if (deviceClass) c["device_class"]        = deviceClass;
+  if (stateClass)  c["state_class"]         = stateClass;
+  if (diagnostic)  c["entity_category"]     = "diagnostic";
+}
 
+static void addBinarySensor(JsonObject cmps, const char *objectId, const char *name,
+                            const char *valueTemplate, const char *deviceClass,
+                            bool diagnostic) {
+  char uid[64];
+  snprintf(uid, sizeof(uid), "%s_%s", HA_DEVICE_ID, objectId);
+  JsonObject c = cmps[objectId].to<JsonObject>();
+  c["platform"]       = "binary_sensor";
+  c["unique_id"]      = uid;
+  c["object_id"]      = uid;
+  c["name"]           = name;
+  c["value_template"] = valueTemplate;
+  c["payload_on"]     = "ON";
+  c["payload_off"]    = "OFF";
+  if (deviceClass) c["device_class"]    = deviceClass;
+  if (diagnostic)  c["entity_category"] = "diagnostic";
+}
+
+static void publishDiscovery() {
+  JsonDocument doc;
+
+  // Device block: groups all entities under one HA device.
   JsonObject dev = doc["device"].to<JsonObject>();
   dev["identifiers"].to<JsonArray>().add(HA_DEVICE_ID);
   dev["name"]         = HA_DEVICE_NAME;
   dev["manufacturer"] = HA_MANUFACTURER;
   dev["model"]        = HA_MODEL;
-}
 
-// Serialize `doc` and publish it retained to the HA discovery config topic for
-// the given platform ("sensor" / "binary_sensor").
-static void publishConfig(const char *platform, const char *objectId, JsonDocument &doc) {
-  char topic[128];
-  snprintf(topic, sizeof(topic), "homeassistant/%s/%s/%s/config",
-           platform, HA_DEVICE_ID, objectId);
-  char payload[640];
+  // Origin block is mandatory for device-based discovery.
+  doc["origin"]["name"] = MQTT_CLIENT_ID;
+
+  // Shared by every component below.
+  doc["state_topic"]        = MQTT_STATE_TOPIC;
+  doc["availability_topic"] = MQTT_AVAIL_TOPIC;
+
+  JsonObject cmps = doc["components"].to<JsonObject>();
+  addSensor(cmps, "total", "Water meter total",
+            "{{ value_json.total_m3 }}", "m³", "water", "total_increasing", false);
+  addSensor(cmps, "last_month_total", "Water meter last month total",
+            "{{ value_json.last_month_m3 }}", "m³", "water", "total_increasing", false);
+  addSensor(cmps, "last_month_date", "Water meter last month date",
+            "{{ value_json.last_month_date }}", nullptr, "date", nullptr, true);
+  addSensor(cmps, "battery_life", "Water meter battery life",
+            "{{ value_json.battery_years }}", "y", nullptr, "measurement", true);
+  addSensor(cmps, "transmit_period", "Water meter transmit period",
+            "{{ value_json.transmit_period_s }}", "s", "duration", "measurement", true);
+  addSensor(cmps, "current_alarms", "Water meter current alarms",
+            "{{ value_json.current_alarms }}", nullptr, nullptr, nullptr, true);
+  addSensor(cmps, "previous_alarms", "Water meter previous alarms",
+            "{{ value_json.previous_alarms }}", nullptr, nullptr, nullptr, true);
+  addBinarySensor(cmps, "general_alarm", "Water meter general alarm",
+                  "{{ value_json.general_alarm }}", "problem", true);
+  addSensor(cmps, "rssi", "Water meter RSSI",
+            "{{ value_json.rssi }}", "dBm", "signal_strength", "measurement", true);
+
+  char topic[96];
+  snprintf(topic, sizeof(topic), "homeassistant/device/%s/config", HA_DEVICE_ID);
+  char payload[3584];
   size_t n = serializeJson(doc, payload, sizeof(payload));
-  mqtt.publish(topic, (const uint8_t *)payload, n, true);
-}
-
-// Pass nullptr for unit/deviceClass/stateClass to omit them.
-static void publishSensorDiscovery(const char *objectId, const char *name,
-                                   const char *valueTemplate, const char *unit,
-                                   const char *deviceClass, const char *stateClass,
-                                   bool diagnostic) {
-  JsonDocument doc;
-  addHaCommon(doc, objectId);
-  doc["name"]           = name;
-  doc["value_template"] = valueTemplate;
-  if (unit)        doc["unit_of_measurement"] = unit;
-  if (deviceClass) doc["device_class"]        = deviceClass;
-  if (stateClass)  doc["state_class"]         = stateClass;
-  if (diagnostic)  doc["entity_category"]     = "diagnostic";
-  publishConfig("sensor", objectId, doc);
-}
-
-static void publishBinarySensorDiscovery(const char *objectId, const char *name,
-                                         const char *valueTemplate,
-                                         const char *deviceClass, bool diagnostic) {
-  JsonDocument doc;
-  addHaCommon(doc, objectId);
-  doc["name"]           = name;
-  doc["value_template"] = valueTemplate;
-  doc["payload_on"]     = "ON";
-  doc["payload_off"]    = "OFF";
-  if (deviceClass) doc["device_class"]    = deviceClass;
-  if (diagnostic)  doc["entity_category"] = "diagnostic";
-  publishConfig("binary_sensor", objectId, doc);
-}
-
-static void publishDiscovery() {
-  publishSensorDiscovery("total", "Water meter total",
-                         "{{ value_json.total_m3 }}", "m³", "water",
-                         "total_increasing", false);
-  publishSensorDiscovery("last_month_total", "Water meter last month total",
-                         "{{ value_json.last_month_m3 }}", "m³", "water",
-                         "total_increasing", false);
-  publishSensorDiscovery("last_month_date", "Water meter last month date",
-                         "{{ value_json.last_month_date }}", nullptr, "date",
-                         nullptr, true);
-  publishSensorDiscovery("battery_life", "Water meter battery life",
-                         "{{ value_json.battery_years }}", "y", nullptr,
-                         "measurement", true);
-  publishSensorDiscovery("transmit_period", "Water meter transmit period",
-                         "{{ value_json.transmit_period_s }}", "s", "duration",
-                         "measurement", true);
-  publishSensorDiscovery("current_alarms", "Water meter current alarms",
-                         "{{ value_json.current_alarms }}", nullptr, nullptr,
-                         nullptr, true);
-  publishSensorDiscovery("previous_alarms", "Water meter previous alarms",
-                         "{{ value_json.previous_alarms }}", nullptr, nullptr,
-                         nullptr, true);
-  publishBinarySensorDiscovery("general_alarm", "Water meter general alarm",
-                               "{{ value_json.general_alarm }}", "problem", true);
-  publishSensorDiscovery("rssi", "Water meter RSSI",
-                         "{{ value_json.rssi }}", "dBm", "signal_strength",
-                         "measurement", true);
+  bool ok = mqtt.publish(topic, (const uint8_t *)payload, n, true);
+  Serial.printf("[mqtt] discovery %s (%u bytes)\n",
+                ok ? "published" : "FAILED (raise MQTT buffer?)", (unsigned)n);
 }
 
 // --- MQTT connection / publishing ------------------------------------------
@@ -261,7 +262,7 @@ void setup() {
   lastWifiBegin = millis();
 
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
-  mqtt.setBufferSize(768);                       // room for HA discovery payloads
+  mqtt.setBufferSize(4096);                      // room for the combined HA device-discovery payload
   mqtt.setKeepAlive(MQTT_KEEPALIVE_S);
   mqtt.setSocketTimeout(MQTT_SOCKET_TIMEOUT_S);  // bound any blocking op
 

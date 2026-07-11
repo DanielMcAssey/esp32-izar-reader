@@ -78,14 +78,15 @@ first build:
 
 ## Home Assistant
 
-On MQTT connect the firmware publishes an
-[MQTT discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery)
+On MQTT connect the firmware publishes a single
+[MQTT device-discovery](https://www.home-assistant.io/integrations/mqtt/#device-based-discovery)
 config, so a `sensor.water_meter_total` (device_class `water`, state_class
 `total_increasing`, unit `m³`) appears automatically — no YAML needed. It is
 suitable for the HA **Energy dashboard** (water).
 
-All entities are grouped under a single **Izar Water Meter** device (Diehl /
-IZAR RC 868) via the discovery `device` block. Published entities:
+All entities are declared together under a single **Izar Water Meter** device
+(Diehl / IZAR RC 868) in one retained `homeassistant/device/.../config` message
+(each entity is a `component` with its own `platform`). Published entities:
 
 | Entity | Source | Notes |
 |---|---|---|
@@ -105,7 +106,7 @@ MQTT topics (configurable in `include/config.h`):
 |---|---|
 | `watermeter/izar/state` | JSON: `total_m3`, `total_l`, `last_month_m3`, `last_month_date`, `battery_years`, `transmit_period_s`, `current_alarms`, `previous_alarms`, `general_alarm`, `rssi`, `meter_id` |
 | `watermeter/izar/status` | `online` / `offline` (retained availability / LWT) |
-| `homeassistant/sensor/izar_watermeter/<entity>/config` | HA discovery (retained) |
+| `homeassistant/device/izar_watermeter/config` | HA device discovery, all entities (retained) |
 
 ## Over-the-air (OTA) updates
 
