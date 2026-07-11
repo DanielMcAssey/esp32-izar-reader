@@ -110,14 +110,24 @@ MQTT topics (configurable in `include/config.h`):
 ## Over-the-air (OTA) updates
 
 Once the device is on WiFi it advertises itself for OTA (hostname
-`OTA_HOSTNAME`, password `OTA_PASSWORD` in `secrets.h`). Flash wirelessly —
-no USB cable needed:
+`OTA_HOSTNAME`, password `OTA_PASSWORD` in `secrets.h`). Flash wirelessly with
+the dedicated `ota` environment — no USB cable needed.
+
+First export the OTA password (must match `OTA_PASSWORD` in `secrets.h`):
 
 ```bash
-pio run -t upload --upload-port izar-watermeter.local
-# or by IP:
-pio run -t upload --upload-port 192.168.1.42
+export IZAR_OTA_PASSWORD=your-password          # macOS/Linux
+$env:IZAR_OTA_PASSWORD = "your-password"        # Windows PowerShell
 ```
+
+Then upload:
+
+```bash
+pio run -e ota -t upload
+```
+
+The target host/IP is `upload_port` in `platformio.ini` (default
+`izar-watermeter.local`); override per-run with `--upload-port 192.168.1.42`.
 
 ## Resilience
 
