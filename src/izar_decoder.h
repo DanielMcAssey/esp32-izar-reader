@@ -1,6 +1,6 @@
 #pragma once
 
-#include <Arduino.h>
+#include <cstdint>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -26,18 +26,46 @@ struct IzarReading {
   bool     valid           = false;  // descrambled to a valid IZAR frame
   uint32_t meterId         = 0;      // little-endian A field
   uint32_t liters          = 0;      // total consumption (L)
-  float    m3              = 0.0f;   // total consumption (m3)
+  double   m3              = 0.0;    // total consumption (m3); double keeps 0.001 m3 resolution
+  bool     hasLastMonth    = false;  // payload carried the last-month volume
   uint32_t lastMonthLiters = 0;      // total around end of last month (L)
-  float    lastMonthM3     = 0.0f;   // total around end of last month (m3)
+  double   lastMonthM3     = 0.0;    // total around end of last month (m3)
   float    batteryYears    = 0.0f;   // estimated remaining battery life (years)
-  uint16_t transmitPeriodS = 0;      // meter transmit period (seconds)
+  uint32_t transmitPeriodS = 0;      // meter transmit period (seconds, up to 2^17)
   bool     generalAlarm    = false;  // device-level general alarm flag
   char     currentAlarms[96] = "";   // comma-separated, or "no_alarm"
   char     previousAlarms[48] = "";  // comma-separated, or "no_alarm"
-  char     lastMonthDate[12] = "";   // "YYYY-MM-DD" of last-month reading, or ""
+  char     lastMonthDate[12] = "";   // "YYYY-MM-DD" of last-month reading, or "" if absent/invalid
 };
 
 // Decode an already-CRC-stripped wM-Bus telegram (as returned by wMbus-lib's
 // WMbusFrame.frame). Returns a reading with valid=false if the frame is too
 // short or does not descramble to a valid IZAR payload.
 IzarReading izarDecode(const std::vector<uint8_t> &frame);
+
+// Guards against implausible readings (noise that slipped past CRC but still
+// descrambled to the 0x4B marker). A reading is accepted when the total is
+// monotonic and within `maxJumpL` litres of the last accepted one. If the
+// meter really did jump (or the very first reading was garbage), the new value
+// is adopted once `confirmCount` consecutive rejected readings agree with each
+// other, so the filter can never latch onto a bad baseline.
+class IzarPlausibility {
+ public:
+  explicit IzarPlausibility(uint32_t maxJumpL, uint8_t confirmCount = 3)
+      : maxJumpL_(maxJumpL), confirmCount_(confirmCount) {}
+
+  // Returns true if `liters` should be published; updates internal state.
+  bool accept(uint32_t liters);
+
+ private:
+  bool within(uint32_t base, uint32_t value) const {
+    return value >= base && value - base <= maxJumpL_;
+  }
+
+  uint32_t maxJumpL_;
+  uint8_t  confirmCount_;
+  bool     haveBaseline_ = false;
+  uint32_t baseline_     = 0;
+  uint32_t candidate_    = 0;
+  uint8_t  agreeing_     = 0;
+};

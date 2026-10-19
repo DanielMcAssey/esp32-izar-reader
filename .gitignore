@@ -8,3 +8,4 @@ include/secrets.h
 *.db-shm
 *.db-wal
 .tokensave/
+__pycache__/

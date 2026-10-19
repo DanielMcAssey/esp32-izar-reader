@@ -1,0 +1,71 @@
+name: Release
+
+# Push a tag like v1.2.0 to build the firmware and publish it as a GitHub release.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            .pio/libdeps
+          key: pio-${{ hashFiles('platformio.ini') }}
+
+      - run: pip install platformio
+
+      # WiFi/MQTT/OTA credentials and METER_ID are compiled in, and secrets.h is
+      # gitignored. The release is built with the placeholder example values and
+      # never contains real credentials.
+      - run: cp include/secrets.h.example include/secrets.h
+
+      - name: Decoder unit tests (host)
+        run: pio test -e native
+
+      - name: Build firmware
+        env:
+          # Shown as sw_version in Home Assistant and in the boot log.
+          PLATFORMIO_BUILD_FLAGS: '-DFW_VERSION=\"${{ github.ref_name }}\"'
+        run: pio run -e usb
+
+      - name: Package artifacts
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          B=.pio/build/usb
+          mkdir -p dist
+          # App image only: for OTA / flashing at 0x10000 over an existing install.
+          cp "$B/firmware.bin" "dist/izar-watermeter-$TAG-app.bin"
+          # Full image (bootloader + partitions + app): flash at 0x0 on a blank board.
+          python ~/.platformio/packages/tool-esptoolpy/esptool.py --chip esp32 merge_bin \
+            -o "dist/izar-watermeter-$TAG-factory.bin" \
+            --flash_mode dio --flash_freq 40m --flash_size 4MB \
+            0x1000  "$B/bootloader.bin" \
+            0x8000  "$B/partitions.bin" \
+            0xe000  ~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin \
+            0x10000 "$B/firmware.bin"
+          (cd dist && sha256sum *.bin > SHA256SUMS.txt)
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" dist/* \
+            --title "$TAG" \
+            --generate-notes \
+            --notes "**Note:** credentials and \`METER_ID\` are compiled in. These binaries use the placeholder values from \`secrets.h.example\`, so for a working device build from source with your own \`secrets.h\`. \`*-factory.bin\` flashes at 0x0 on a blank board; \`*-app.bin\` is the application image only."

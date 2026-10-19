@@ -1,11 +1,17 @@
 #include "izar_decoder.h"
 
+#include <cstdio>
+#include <cstring>
+
 // ---------------------------------------------------------------------------
 //  Frame layout constants (see izar_decoder.h). "Frame" offsets index the raw
 //  CRC-stripped telegram; "payload" offsets index the descrambled payload.
 // ---------------------------------------------------------------------------
 namespace {
 constexpr uint8_t HEADER_LEN    = 15;    // scrambled payload starts here
+constexpr size_t  MIN_FRAME_LEN = 20;    // header + at least the 4-byte volume + marker
+constexpr size_t  MAX_FRAME_LEN = 255;   // wM-Bus L-field is one byte
+constexpr uint32_t KEY_SEED     = 0xdfd109e8;  // IZAR descrambler initial key
 constexpr uint8_t VALID_MARKER  = 0x4B;  // descrambled payload[0] must equal this
 constexpr uint8_t OFF_METER_ID  = 4;     // frame: A field (LE)
 constexpr uint8_t FRAME_PERIOD  = 11;    // frame: transmit-period / general alarm
@@ -21,36 +27,29 @@ constexpr uint8_t PAY_DATE_HI   = 10;    // payload: date high byte (month + yea
 //  Byte helpers (ported from maciekn/izar-wmbus-esp izar_utils.cpp)
 // ---------------------------------------------------------------------------
 
-#define GET_BIT(var, pos) (((var) >> (pos)) & 0x01)
+namespace {
+enum class Endian { Big, Little };
 
-// Big-endian 32-bit read.
-static uint32_t uintFromBytes(const uint8_t *data) {
-  uint32_t result = (uint32_t)data[0] << 24;
-  result += (uint32_t)data[1] << 16;
-  result += (uint32_t)data[2] << 8;
-  result += data[3];
-  return result;
-}
+constexpr uint8_t bit(uint32_t value, uint8_t pos) { return (value >> pos) & 0x01; }
 
-// Little-endian 32-bit read.
-static uint32_t uintFromBytesLittleEndian(const uint8_t *data) {
-  uint32_t result = (uint32_t)data[3] << 24;
-  result += (uint32_t)data[2] << 16;
-  result += (uint32_t)data[1] << 8;
-  result += data[0];
+uint32_t readU32(const uint8_t *data, Endian order) {
+  uint32_t result = 0;
+  for (uint8_t i = 0; i < 4; i++) {
+    const uint8_t b = (order == Endian::Big) ? data[i] : data[3 - i];
+    result = (result << 8) | b;
+  }
   return result;
 }
 
 // LFSR-style key mangling used by the IZAR descrambler.
-static uint32_t hashShiftKey(uint32_t key) {
+uint32_t hashShiftKey(uint32_t key) {
   for (uint8_t i = 0; i < 8; i++) {
-    uint8_t bit = GET_BIT(key, 1) ^ GET_BIT(key, 2) ^ GET_BIT(key, 11) ^
-                  GET_BIT(key, 31);
-    key <<= 1;
-    key |= bit;
+    const uint8_t feedback = bit(key, 1) ^ bit(key, 2) ^ bit(key, 11) ^ bit(key, 31);
+    key = (key << 1) | feedback;
   }
   return key;
 }
+}  // namespace
 
 // IZAR descrambler. `encoded` is the CRC-stripped telegram; writes the
 // descrambled payload into `decoded` (at most `outCap` bytes). Returns the
@@ -62,10 +61,10 @@ static uint8_t izarDescramble(const uint8_t *encoded, uint8_t len,
     return 0;
   }
 
-  uint32_t key = 0xdfd109e8;
-  key ^= uintFromBytes(encoded + 2);
-  key ^= uintFromBytes(encoded + 6);
-  key ^= uintFromBytes(encoded + 10);
+  uint32_t key = KEY_SEED;
+  key ^= readU32(encoded + 2, Endian::Big);
+  key ^= readU32(encoded + 6, Endian::Big);
+  key ^= readU32(encoded + 10, Endian::Big);
 
   uint8_t size = len - HEADER_LEN;
   if (size > outCap) {  // never write past the caller's buffer
@@ -101,26 +100,26 @@ static void decodeAlarms(const uint8_t *frame, IzarReading &r) {
   const uint8_t b12 = frame[FRAME_BATTERY];
   const uint8_t b13 = frame[FRAME_ALARMS];
 
-  r.generalAlarm = (frame[FRAME_PERIOD] >> 7) & 0x1;
+  r.generalAlarm = bit(frame[FRAME_PERIOD], 7);
 
   size_t cur = 0, prev = 0;
   r.currentAlarms[0] = '\0';
   r.previousAlarms[0] = '\0';
 
   // current
-  if (b12 >> 7)            appendAlarm(r.currentAlarms, sizeof(r.currentAlarms), cur, "leakage");
-  if ((b12 >> 5) & 0x1)    appendAlarm(r.currentAlarms, sizeof(r.currentAlarms), cur, "meter_blocked");
-  if (b13 >> 7)            appendAlarm(r.currentAlarms, sizeof(r.currentAlarms), cur, "back_flow");
-  if ((b13 >> 6) & 0x1)    appendAlarm(r.currentAlarms, sizeof(r.currentAlarms), cur, "underflow");
-  if ((b13 >> 5) & 0x1)    appendAlarm(r.currentAlarms, sizeof(r.currentAlarms), cur, "overflow");
-  if ((b13 >> 4) & 0x1)    appendAlarm(r.currentAlarms, sizeof(r.currentAlarms), cur, "submarine");
-  if ((b13 >> 3) & 0x1)    appendAlarm(r.currentAlarms, sizeof(r.currentAlarms), cur, "sensor_fraud");
-  if ((b13 >> 1) & 0x1)    appendAlarm(r.currentAlarms, sizeof(r.currentAlarms), cur, "mechanical_fraud");
+  if (bit(b12, 7)) appendAlarm(r.currentAlarms, sizeof(r.currentAlarms), cur, "leakage");
+  if (bit(b12, 5)) appendAlarm(r.currentAlarms, sizeof(r.currentAlarms), cur, "meter_blocked");
+  if (bit(b13, 7)) appendAlarm(r.currentAlarms, sizeof(r.currentAlarms), cur, "back_flow");
+  if (bit(b13, 6)) appendAlarm(r.currentAlarms, sizeof(r.currentAlarms), cur, "underflow");
+  if (bit(b13, 5)) appendAlarm(r.currentAlarms, sizeof(r.currentAlarms), cur, "overflow");
+  if (bit(b13, 4)) appendAlarm(r.currentAlarms, sizeof(r.currentAlarms), cur, "submarine");
+  if (bit(b13, 3)) appendAlarm(r.currentAlarms, sizeof(r.currentAlarms), cur, "sensor_fraud");
+  if (bit(b13, 1)) appendAlarm(r.currentAlarms, sizeof(r.currentAlarms), cur, "mechanical_fraud");
 
   // previous
-  if ((b12 >> 6) & 0x1)    appendAlarm(r.previousAlarms, sizeof(r.previousAlarms), prev, "leakage");
-  if ((b13 >> 2) & 0x1)    appendAlarm(r.previousAlarms, sizeof(r.previousAlarms), prev, "sensor_fraud");
-  if (b13 & 0x1)           appendAlarm(r.previousAlarms, sizeof(r.previousAlarms), prev, "mechanical_fraud");
+  if (bit(b12, 6)) appendAlarm(r.previousAlarms, sizeof(r.previousAlarms), prev, "leakage");
+  if (bit(b13, 2)) appendAlarm(r.previousAlarms, sizeof(r.previousAlarms), prev, "sensor_fraud");
+  if (bit(b13, 0)) appendAlarm(r.previousAlarms, sizeof(r.previousAlarms), prev, "mechanical_fraud");
 
   if (cur == 0) {
     strcpy(r.currentAlarms, "no_alarm");
@@ -141,14 +140,14 @@ IzarReading izarDecode(const std::vector<uint8_t> &frame) {
 
   // Guard both ends before narrowing to uint8_t: a wM-Bus L-field is one byte,
   // so anything above 255 is a malformed/garbage frame from the radio.
-  if (frame.size() < 20 || frame.size() > 255) {  // need header (15) + payload
+  if (frame.size() < MIN_FRAME_LEN || frame.size() > MAX_FRAME_LEN) {
     return r;
   }
   const uint8_t  len     = (uint8_t)frame.size();
   const uint8_t *encoded = frame.data();
 
   // Meter id is the little-endian A field, available before descrambling.
-  r.meterId = uintFromBytesLittleEndian(encoded + OFF_METER_ID);
+  r.meterId = readU32(encoded + OFF_METER_ID, Endian::Little);
 
   uint8_t decrypted[64] = {0};
   uint8_t decryptedLen = izarDescramble(encoded, len, decrypted, sizeof(decrypted));
@@ -157,13 +156,14 @@ IzarReading izarDecode(const std::vector<uint8_t> &frame) {
   }
 
   // Total consumption (liters) at payload[1..4], little-endian.
-  r.liters = uintFromBytesLittleEndian(decrypted + PAY_TOTAL);
-  r.m3     = r.liters / 1000.0f;
+  r.liters = readU32(decrypted + PAY_TOTAL, Endian::Little);
+  r.m3     = r.liters / 1000.0;
 
   // Last-month total at payload[5..8] when present.
   if (decryptedLen >= PAY_LASTMONTH + 4) {
-    r.lastMonthLiters = uintFromBytesLittleEndian(decrypted + PAY_LASTMONTH);
-    r.lastMonthM3     = r.lastMonthLiters / 1000.0f;
+    r.hasLastMonth    = true;
+    r.lastMonthLiters = readU32(decrypted + PAY_LASTMONTH, Endian::Little);
+    r.lastMonthM3     = r.lastMonthLiters / 1000.0;
   }
 
   // Last-month measure date packed across payload[9] and payload[10]:
@@ -175,15 +175,42 @@ IzarReading izarDecode(const std::vector<uint8_t> &frame) {
     int year  = decodeYear > 80 ? decodeYear + 1900 : decodeYear + 2000;
     int month = decrypted[PAY_DATE_HI] & 0x0F;
     int day   = decrypted[PAY_DATE_LO] & 0x1F;
-    snprintf(r.lastMonthDate, sizeof(r.lastMonthDate), "%04d-%02d-%02d", year, month, day);
+    // Leave the date empty rather than emit "2026-00-00" for a garbled field.
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      snprintf(r.lastMonthDate, sizeof(r.lastMonthDate), "%04d-%02d-%02d", year, month, day);
+    }
   }
 
   // Battery / transmit period from the raw header (frame >= 14 bytes: guaranteed).
   r.batteryYears    = (encoded[FRAME_BATTERY] & 0x1F) / 2.0f;
-  r.transmitPeriodS = (uint16_t)1 << ((encoded[FRAME_PERIOD] & 0x0F) + 2);
+  r.transmitPeriodS = (uint32_t)1 << ((encoded[FRAME_PERIOD] & 0x0F) + 2);
 
   decodeAlarms(encoded, r);
 
   r.valid = true;
   return r;
+}
+
+bool IzarPlausibility::accept(uint32_t liters) {
+  if (!haveBaseline_ || within(baseline_, liters)) {
+    haveBaseline_ = true;
+    baseline_     = liters;
+    agreeing_     = 0;
+    return true;
+  }
+
+  // Out of range: only adopt it once several consecutive readings agree.
+  if (agreeing_ > 0 && within(candidate_, liters)) {
+    agreeing_++;
+  } else {
+    agreeing_ = 1;
+  }
+  candidate_ = liters;
+
+  if (agreeing_ >= confirmCount_) {
+    baseline_ = liters;
+    agreeing_ = 0;
+    return true;
+  }
+  return false;
 }

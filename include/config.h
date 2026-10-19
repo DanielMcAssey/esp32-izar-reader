@@ -28,6 +28,20 @@
 #define MQTT_STATE_TOPIC "watermeter/izar/state"
 #define MQTT_AVAIL_TOPIC "watermeter/izar/status"
 
+//  Home Assistant publishes "online" here on (re)start; we answer by resending
+//  discovery + the last reading, since HA forgets non-retained state.
+#define HA_STATUS_TOPIC "homeassistant/status"
+//  PubSubClient packet buffer. publish() fails silently if a packet exceeds it,
+//  so the discovery payload buffer below must (and is static_assert'ed to) fit.
+#define MQTT_BUFFER_SIZE       4096
+#define MQTT_DISCOVERY_MAX_LEN 3584
+#define MQTT_STATE_MAX_LEN     512
+
+// --- Firmware version (shown as sw_version in HA; changes on every build) ---
+#ifndef FW_VERSION  // CI release builds override this with the git tag
+#define FW_VERSION __DATE__ " " __TIME__
+#endif
+
 // --- Home Assistant device (groups all entities under one device) ---
 #define HA_DEVICE_ID    "izar_watermeter"
 #define HA_DEVICE_NAME  "Izar Water Meter"
@@ -53,3 +67,25 @@
 #define MQTT_SOCKET_TIMEOUT_S 2
 //  MQTT keepalive (seconds).
 #define MQTT_KEEPALIVE_S 15
+//  WiFi forced re-begin backs off exponentially from WIFI_REBEGIN_MS up to this
+//  cap, so a slow association/DHCP is not repeatedly interrupted.
+#define WIFI_REBEGIN_MAX_MS 300000UL
+
+// --- Reading sanity / radio watchdog ---
+//  Reject readings whose total rises by more than this many litres relative to
+//  the last accepted one (or that go backwards) until 3 in a row agree.
+#define IZAR_MAX_JUMP_L 10000UL
+//  No valid reading for this long (ms): mark the device "offline" in HA so
+//  stale data is visible. The next reading brings it back online.
+#define STALE_OFFLINE_MS 1800000UL
+//  No valid reading for this long (ms): assume the CC1101 wedged and reboot.
+//  Only active when METER_ID != 0.
+#define RADIO_STALL_RESTART_MS 21600000UL
+//  Retry interval (ms) for a failed CC1101 init.
+#define RADIO_RETRY_MS 30000UL
+
+// --- Publishing ---
+//  The meter transmits every few seconds, but only the total (and rssi) move.
+//  Publish when the total changes, otherwise at most this often (ms), so the HA
+//  recorder isn't flooded with an rssi row per telegram.
+#define PUBLISH_MIN_INTERVAL_MS 60000UL
