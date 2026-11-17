@@ -155,7 +155,11 @@ static JsonObject addComponent(JsonObject cmps, const char *platform, const char
   JsonObject c = cmps[objectId].to<JsonObject>();
   c["platform"]       = platform;  // required for each device-discovery component
   c["unique_id"]      = uid;       // char[] -> ArduinoJson copies into the doc
-  c["object_id"]      = uid;       // predictable entity_id
+  // Predictable entity_id. Replaces the deprecated `object_id`; must be the full
+  // "<platform>.<id>" form.
+  char eid[96];
+  snprintf(eid, sizeof(eid), "%s.%s", platform, uid);
+  c["default_entity_id"] = eid;  // char[] -> ArduinoJson copies into the doc
   c["name"]           = name;
   c["value_template"] = valueTemplate;
   if (deviceClass) c["device_class"]    = deviceClass;
@@ -437,9 +441,37 @@ static bool initRadio() {
   return false;
 }
 
+// --- Status LED ----------------------------------------------------------------
+//  Non-blocking; only touched from loop() so a frozen loop = a dead LED.
+
+static unsigned long ledRxUntil = 0;
+
+static void ledRxFlash() {
+  ledRxUntil = millis() + LED_RX_FLASH_MS;
+  if (ledRxUntil == 0) ledRxUntil = 1;
+}
+
+static void ledUpdate(unsigned long now) {
+#if LED_PIN >= 0
+  const long remaining = (long)(ledRxUntil - now);
+  bool on;
+  if (ledRxUntil != 0 && remaining > 0) {
+    // Rapid flicker while a telegram was just received.
+    on = ((LED_RX_FLASH_MS - remaining) / LED_RX_TOGGLE_MS) % 2 == 0;
+  } else {
+    on = (now % LED_HEARTBEAT_MS) < LED_BLIP_MS;  // single slow heartbeat blip
+  }
+  digitalWrite(LED_PIN, on ? HIGH : LOW);
+#endif
+}
+
 // --- Arduino entry points --------------------------------------------------
 
 void setup() {
+#if LED_PIN >= 0
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, HIGH);  // lit during boot
+#endif
   Serial.begin(115200);
   delay(200);
   Serial.printf("\n[izar] ESP32 + CC1101 wM-Bus water meter reader (%s)\n", FW_VERSION);
@@ -464,6 +496,7 @@ void setup() {
 
 void loop() {
   unsigned long now = millis();
+  ledUpdate(now);
 
   if (!radioOk) {
     // Retry a failed init without ever blocking for long.
@@ -500,6 +533,7 @@ void loop() {
           return;
         }
         lastValidRxMs = millis();
+        ledRxFlash();
         Serial.printf("[izar] meter=%u total=%.3f m3 (%u L) batt=%.1fy period=%us alarms=%s\n",
                       (unsigned)r.meterId, r.m3, (unsigned)r.liters,
                       r.batteryYears, (unsigned)r.transmitPeriodS, r.currentAlarms);

@@ -55,7 +55,7 @@ The CC1101 RX loop is timing-sensitive, so **`loop()` must never block** (no `de
 Radio watchdog (`config.h`): a failed CC1101 init is retried every `RADIO_RETRY_MS`; with no valid reading for `STALE_OFFLINE_MS` the device is published `offline` (back to `online` on the next reading); after `RADIO_STALL_RESTART_MS` the board reboots. Stale/restart checks are disabled in bring-up mode (`METER_ID == 0`).
 
 ### Home Assistant MQTT discovery
-Discovery carries `sw_version` (`FW_VERSION`, build date/time). Absent last-month volume/date publish as JSON `null` (-> "unknown" in HA), not 0. Entity `name`s omit the device name (HA prepends it); entity IDs come from `object_id`, so renaming a display name is safe.
+Discovery carries `sw_version` (`FW_VERSION`, build date/time). Absent last-month volume/date publish as JSON `null` (-> "unknown" in HA), not 0. Entity `name`s omit the device name (HA prepends it); entity IDs come from `default_entity_id` (full `<platform>.<id>`; the old `object_id` is deprecated/removed in HA), so renaming a display name is safe.
 
 
 On each MQTT (re)connect, `publishDiscovery()` sends **one retained** device-based discovery config to `homeassistant/device/izar_watermeter/config` — a `device` block, mandatory `origin`, shared `state_topic`/`availability_topic`, and a `components` map (each entity carries its own `platform` + `unique_id`). Readings go to `watermeter/izar/state` as JSON; availability/LWT to `watermeter/izar/status`.

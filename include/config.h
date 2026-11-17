@@ -19,6 +19,17 @@
 #define CC1101_GDO0 16
 #define CC1101_GDO2 17
 
+// --- Status LED (onboard LED on most ESP32 devkits; set to -1 to disable) ---
+//  Heartbeat: short blip every LED_HEARTBEAT_MS, driven from loop(), so if it
+//  stops blinking the main loop has frozen. Longer flash on each valid telegram.
+#define LED_PIN          2
+#define LED_HEARTBEAT_MS 2000UL
+#define LED_BLIP_MS      60UL
+//  Telegram received: rapid flicker (LED_RX_TOGGLE_MS on/off) for LED_RX_FLASH_MS,
+//  clearly different from the single slow heartbeat blip.
+#define LED_RX_FLASH_MS  800UL
+#define LED_RX_TOGGLE_MS 80UL
+
 // --- Radio ---
 //  868.95 MHz, wM-Bus T1 mode (Diehl IZAR RC 868).
 #define WMBUS_FREQ 868.950f
